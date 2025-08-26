@@ -1,10 +1,10 @@
 <?php
 function connect() {
-    $serverName = "DESKTOP-IR2Q0I5\\SQLEXPRESS";
+    $serverName = "LAPTOP-CPOISVPG\SQLEXPRESS";
     $connectionOptions = [
         "Database" => "tv_app_db",
-        "Uid" => "",
-        "PWD" => ""
+        "Uid" => "sa",
+        "PWD" => "ishom210404"
     ];
 
     $conn = sqlsrv_connect($serverName, $connectionOptions);

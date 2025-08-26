@@ -6,6 +6,29 @@ class SchoolRegistrationController {
         $this->db = $dbConnection;
     }
 
+    /* -------------------------------------------------
+     * Aliases so older/newer routes won’t break:
+     * - routes may call register(), store(), check()
+     *   → all mapped to your original methods.
+     * ------------------------------------------------- */
+    public function register($req, $res) {
+        return $this->registerSchool($req, $res);
+    }
+    public function store($req, $res) {
+        return $this->registerSchool($req, $res);
+    }
+    public function check($req, $res) {
+        return $this->checkRegistration($req, $res);
+    }
+
+    /* Small helper: accept serial_number_tv | sn_tv | snTv */
+    private function pickSerialFromArray(array $data): string {
+        if (isset($data['serial_number_tv'])) return strtoupper(trim((string)$data['serial_number_tv']));
+        if (isset($data['sn_tv']))            return strtoupper(trim((string)$data['sn_tv']));
+        if (isset($data['snTv']))             return strtoupper(trim((string)$data['snTv']));
+        return '';
+    }
+
     public function registerSchool($req, $res) {
         $raw = file_get_contents('php://input');
         error_log('Raw JSON received: ' . $raw);
@@ -22,7 +45,8 @@ class SchoolRegistrationController {
 
         $NPSN          = strtoupper(trim($data['npsn'] ?? ''));
         $school_name   = trim($data['nama_sekolah'] ?? '');
-        $sn_tv         = strtoupper(trim($data['serial_number_tv'] ?? ''));
+        // 🔁 accept multiple serial key names (kept compat with your original)
+        $sn_tv         = $this->pickSerialFromArray($data);
         $registered_at = date('Y-m-d H:i:s');
 
         error_log("REGISTER incoming sn_tv: $sn_tv");
@@ -34,6 +58,25 @@ class SchoolRegistrationController {
             ], 400);
         }
 
+        /* ✅ NEW (non-breaking): ensure the NPSN exists in school_reference,
+           so manual inserts there are respected and you avoid FK surprises later. */
+        $refStmt = sqlsrv_prepare($this->db,
+            'SELECT TOP 1 npsn FROM school_reference WHERE npsn = ?',
+            [$NPSN]
+        );
+        if (!$refStmt || !sqlsrv_execute($refStmt)) {
+            error_log("NPSN reference check failed: " . print_r(sqlsrv_errors(), true));
+            return $res->json(['status'=>'error','message'=>'Database error during school_reference check.'], 500);
+        }
+        $refRow = sqlsrv_fetch_array($refStmt, SQLSRV_FETCH_ASSOC);
+        sqlsrv_free_stmt($refStmt);
+        if (!$refRow) {
+            return $res->json([
+                'status'  => 'error',
+                'message' => 'NPSN not found in school_reference.'
+            ], 404);
+        }
+
         // Duplicate NPSN
         $checkNpsnStmt = sqlsrv_prepare($this->db, 'SELECT * FROM school_registration WHERE NPSN = ?', [$NPSN]);
         if (!$checkNpsnStmt || !sqlsrv_execute($checkNpsnStmt)) {
@@ -41,6 +84,8 @@ class SchoolRegistrationController {
             return $res->json(['status'=>'error','message'=>'Database error during NPSN check.'], 500);
         }
         if (sqlsrv_fetch_array($checkNpsnStmt, SQLSRV_FETCH_ASSOC)) {
+            sqlsrv_free_stmt($checkNpsnStmt);
+            // keep your previous behavior (warning + 200)
             return $res->json(['status'=>'warning','message'=>'NPSN sudah terdaftar.'], 200);
         }
         sqlsrv_free_stmt($checkNpsnStmt);
@@ -52,6 +97,7 @@ class SchoolRegistrationController {
             return $res->json(['status'=>'error','message'=>'Database error during school name check.'], 500);
         }
         if (sqlsrv_fetch_array($checkNameStmt, SQLSRV_FETCH_ASSOC)) {
+            sqlsrv_free_stmt($checkNameStmt);
             return $res->json(['status'=>'warning','message'=>'Nama sekolah sudah terdaftar.'], 200);
         }
         sqlsrv_free_stmt($checkNameStmt);
@@ -63,6 +109,7 @@ class SchoolRegistrationController {
             return $res->json(['status'=>'error','message'=>'Database error during serial number check.'], 500);
         }
         if (sqlsrv_fetch_array($checkSnStmt, SQLSRV_FETCH_ASSOC)) {
+            sqlsrv_free_stmt($checkSnStmt);
             return $res->json(['status'=>'warning','message'=>'Serial number TV sudah terdaftar.'], 200);
         }
         sqlsrv_free_stmt($checkSnStmt);

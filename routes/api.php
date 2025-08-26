@@ -1,72 +1,68 @@
 <?php
-require_once __DIR__ . '/../config/db.php';
-$conn = connect();
+// routes/api.php
+require_once __DIR__.'/../config/db.php';
+require_once __DIR__.'/../controllers/SchoolReferenceController.php';
+require_once __DIR__.'/../controllers/SchoolRegistrationController.php';
+require_once __DIR__.'/../controllers/TvHistoryController.php';
 
-require_once __DIR__ . '/../controllers/TvHistoryController.php';
-require_once __DIR__ . '/../controllers/SchoolRegistrationController.php';
-require_once __DIR__ . '/../controllers/SchoolReferenceController.php';
-
-$requestUri    = rtrim(parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH), '/');
-$requestMethod = $_SERVER['REQUEST_METHOD'] ?? 'GET';
-$parsedInput   = json_decode(file_get_contents('php://input'), true) ?? [];
-
-if (!$conn) {
-    http_response_code(500);
-    header('Content-Type: application/json');
-    echo json_encode(['error' => 'Database connection failed.']);
-    exit;
-}
-
-$response = new class {
-    public function json($data, $status = 200) {
-        http_response_code($status);
-        header('Content-Type: application/json');
-        echo json_encode($data);
+class Request {
+    public string $method;
+    public string $path;
+    public array  $query;
+    public array  $body;
+    public function __construct() {
+        $this->method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+        $this->path   = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+        $this->query  = $_GET ?? [];
+        $raw = file_get_contents('php://input') ?: '';
+        $json = json_decode($raw, true);
+        if (is_array($json))         $this->body = $json;
+        elseif (!empty($_POST))      $this->body = $_POST;
+        else                         $this->body = $this->query;
     }
-};
-
-$tvController        = new TvHistoryController($conn);
-$schoolController    = new SchoolRegistrationController($conn);
-$referenceController = new SchoolReferenceController($conn);
-
-/* -------- TV History -------- */
-if ($requestUri === '/api/tv-history') {
-    if ($requestMethod === 'GET')  { $tvController->index($response); }
-    elseif ($requestMethod === 'POST') { $tvController->store($parsedInput, $response); }
-    else { $response->json(['error'=>'Method not allowed'], 405); }
+}
+class Response {
+    public function json($data, int $code=200): void {
+        http_response_code($code);
+        header('Content-Type: application/json; charset=utf-8');
+        header('Access-Control-Allow-Origin: *');
+        header('Access-Control-Allow-Headers: Content-Type');
+        header('Access-Control-Allow-Methods: GET,POST,OPTIONS');
+        echo json_encode($data, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
+        exit;
+    }
+}
+if (($_SERVER['REQUEST_METHOD']??'')==='OPTIONS') {
+    header('Access-Control-Allow-Origin: *');
+    header('Access-Control-Allow-Headers: Content-Type');
+    header('Access-Control-Allow-Methods: GET,POST,OPTIONS');
+    http_response_code(204); exit;
 }
 
-/* ---- School Registration ---- */
-elseif ($requestUri === '/api/school-registration') {
-    if     ($requestMethod === 'GET')  { $schoolController->getSchools($response); }
-    elseif ($requestMethod === 'POST') { $schoolController->registerSchool($parsedInput, $response); }
-    else { $response->json(['error'=>'Method not allowed'], 405); }
-}
-elseif ($requestUri === '/api/school-registration/by-npsn' && $requestMethod === 'GET') {
-    $schoolController->getSchoolByNpsn($response);
-}
-elseif ($requestUri === '/api/school-registration/by-serial' && $requestMethod === 'GET') {
-    $schoolController->getSchoolBySerial($response);
-}
-elseif ($requestUri === '/api/school-registration/tables' && $requestMethod === 'GET') {
-    $schoolController->listTables($response);
-}
-elseif ($requestUri === '/api/school-registration/table' && $requestMethod === 'GET') {
-    $schoolController->getTable($response);
-}
+$conn = connect();
+$req  = new Request();
+$res  = new Response();
 
-/* ------ Check Registration --- */
-elseif ($requestUri === '/api/check-registration' && $requestMethod === 'GET') {
-    $schoolController->checkRegistration($_GET, $response);
-}
+$path = $req->path;
 
-/* ------- School Reference ---- */
-elseif ($requestUri === '/api/school-reference' && $requestMethod === 'GET') {
-    // keep this if you use reference data lookups
-    $referenceController->lookupByNpsn($_GET, $response);
+// School reference (unchanged behavior)
+if ($req->method==='GET' && $path==='/api/school-reference') {
+    (new SchoolReferenceController($conn))->lookupByNpsn($req->query, $res);
 }
-
-/* -------- Fallback ----------- */
+// Registration (unchanged behavior)
+elseif ($req->method==='POST' && $path==='/api/school-registration') {
+    (new SchoolRegistrationController($conn))->register($req->body, $res);
+}
+elseif ($req->method==='GET' && $path==='/api/check-registration') {
+    (new SchoolRegistrationController($conn))->check($req->query, $res);
+}
+// TV history
+elseif ($req->method==='GET' && $path==='/api/tv-history') {
+    (new TvHistoryController($conn))->index($req->query, $res);
+}
+elseif ($req->method==='POST' && $path==='/api/tv-history') {
+    (new TvHistoryController($conn))->store($req->body, $res);
+}
 else {
-    $response->json(['error' => 'Route not found'], 404);
+    $res->json(['status'=>'error','message'=>'Route not found'],404);
 }

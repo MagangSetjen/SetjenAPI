@@ -1,60 +1,60 @@
 <?php
+require_once __DIR__ . '/../models/TvHistory.php';
 
 class TvHistoryController {
-    private $db;
+    private $conn;
+    public function __construct($conn) { $this->conn = $conn; }
 
-    public function __construct($conn) {
-        $this->db = $conn;
-    }
-
-    public function store($req, $res) {
-        $sn_tv = trim($req['sn_tv'] ?? '');
-        $date = trim($req['date'] ?? '');
-        $app_name = trim($req['app_name'] ?? '');
-        $app_url = trim($req['app_url'] ?? '');
-        $app_duration = intval($req['app_duration'] ?? 0);
-        $thumbnail = trim($req['thumbnail'] ?? '');
-        $tv_duration = intval($req['tv_duration'] ?? 0);
-
-        if (empty($sn_tv) || empty($date) || empty($app_name)) {
-            return $res->json([
-                'status' => 'error',
-                'message' => 'Missing required fields.'
-            ], 400);
+    public function index(array $query, $response) {
+        $sn = $query['sn_tv'] ?? '';
+        if ($sn === '') {
+            return $response->json(['status'=>'error','message'=>'sn_tv required'], 400);
         }
-
-        $insertQuery = "INSERT INTO tv_history (sn_tv, date, app_name, app_url, app_duration, thumbnail, tv_duration)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)";
-        $stmt = sqlsrv_prepare($this->db, $insertQuery, [$sn_tv, $date, $app_name, $app_url, $app_duration, $thumbnail, $tv_duration]);
-        $success = sqlsrv_execute($stmt);
-
-        if ($success) {
-            return $res->json([
-                'status' => 'success',
-                'message' => 'TV history logged.',
-                'data' => compact('sn_tv', 'date', 'app_name', 'app_url', 'app_duration', 'thumbnail', 'tv_duration')
-            ], 201);
-        } else {
-            return $res->json([
-                'status' => 'error',
-                'message' => 'Failed to log TV history.',
-                'sql_error' => sqlsrv_errors()
-            ], 500);
+        try {
+            $rows = TvHistory::listBySn($this->conn, $sn, 200);
+            return $response->json(['status'=>'success','data'=>$rows], 200);
+        } catch (Throwable $e) {
+            TvHistory::log('INDEX ERR: '.$e->getMessage());
+            return $response->json(['status'=>'error','message'=>'server error'], 500);
         }
     }
 
-    public function index($res) {
-        $query = "SELECT * FROM tv_history";
-        $stmt = sqlsrv_query($this->db, $query);
+    public function store(array $body, $response) {
+        // Accept client-provided fields but validate strictly
+        $sn  = trim((string)($body['sn_tv'] ?? ''));
+        $app = trim((string)($body['app_name'] ?? ''));
+        $url = trim((string)($body['app_url'] ?? ''));
+        $thumb = (string)($body['thumbnail'] ?? '');
+        $appDur = (int)($body['app_duration'] ?? 0);
+        $tvDur  = (int)($body['tv_duration'] ?? 0);
+        // date is set by server (GETDATE()), client value ignored
 
-        $history = [];
-        while ($row = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
-            $history[] = $row;
+        TvHistory::log('STORE payload: '.json_encode($body, JSON_UNESCAPED_SLASHES));
+
+        if ($sn==='' || $app==='' || $appDur <= 0) {
+            return $response->json(['status'=>'error','message'=>'invalid payload'], 400);
         }
 
-        return $res->json([
-            'status' => 'success',
-            'data' => $history
-        ]);
+        try {
+            TvHistory::insertRow($this->conn, [
+                'sn_tv'        => $sn,
+                'app_name'     => $app,
+                'app_url'      => $url,
+                'thumbnail'    => $thumb,
+                'app_duration' => $appDur,
+                'tv_duration'  => $tvDur
+            ]);
+            return $response->json(['status'=>'success'], 200);
+        } catch (Throwable $e) {
+            TvHistory::log('INSERT ERR: '.$e->getMessage());
+            // Foreign key helpful hint
+            if (str_contains($e->getMessage(), 'FOREIGN KEY') || str_contains($e->getMessage(), 'FK__tv_histor')) {
+                return $response->json([
+                    'status'=>'error',
+                    'message'=>'sn_tv is not registered'
+                ], 409);
+            }
+            return $response->json(['status'=>'error','message'=>'server error'], 500);
+        }
     }
 }

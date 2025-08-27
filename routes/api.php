@@ -18,7 +18,7 @@ class Request {
         $json = json_decode($raw, true);
         if (is_array($json))         $this->body = $json;
         elseif (!empty($_POST))      $this->body = $_POST;
-        else                         $this->body = $this->query;
+        else                         $this->body = $this->query; // fallback for quick tests
     }
 }
 class Response {
@@ -27,7 +27,6 @@ class Response {
         header('Content-Type: application/json; charset=utf-8');
         header('Access-Control-Allow-Origin: *');
         header('Access-Control-Allow-Headers: Content-Type');
-        header('Access-Control-Allow-Methods: GET,POST,OPTIONS');
         echo json_encode($data, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
         exit;
     }
@@ -45,17 +44,20 @@ $res  = new Response();
 
 $path = $req->path;
 
-// School reference (unchanged behavior)
+// School reference
 if ($req->method==='GET' && $path==='/api/school-reference') {
     (new SchoolReferenceController($conn))->lookupByNpsn($req->query, $res);
 }
-// Registration (unchanged behavior)
+
+// Registration
 elseif ($req->method==='POST' && $path==='/api/school-registration') {
-    (new SchoolRegistrationController($conn))->register($req->body, $res);
+    // FIX: call the correct method name
+    (new SchoolRegistrationController($conn))->registerSchool($req->body, $res);
 }
 elseif ($req->method==='GET' && $path==='/api/check-registration') {
-    (new SchoolRegistrationController($conn))->check($req->query, $res);
+    (new SchoolRegistrationController($conn))->checkRegistration($req->query, $res);
 }
+
 // TV history
 elseif ($req->method==='GET' && $path==='/api/tv-history') {
     (new TvHistoryController($conn))->index($req->query, $res);

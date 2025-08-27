@@ -6,34 +6,16 @@ class SchoolRegistrationController {
         $this->db = $dbConnection;
     }
 
-    /* -------------------------------------------------
-     * Aliases so older/newer routes won’t break:
-     * - routes may call register(), store(), check()
-     *   → all mapped to your original methods.
-     * ------------------------------------------------- */
-    public function register($req, $res) {
-        return $this->registerSchool($req, $res);
-    }
-    public function store($req, $res) {
-        return $this->registerSchool($req, $res);
-    }
-    public function check($req, $res) {
-        return $this->checkRegistration($req, $res);
-    }
-
-    /* Small helper: accept serial_number_tv | sn_tv | snTv */
-    private function pickSerialFromArray(array $data): string {
-        if (isset($data['serial_number_tv'])) return strtoupper(trim((string)$data['serial_number_tv']));
-        if (isset($data['sn_tv']))            return strtoupper(trim((string)$data['sn_tv']));
-        if (isset($data['snTv']))             return strtoupper(trim((string)$data['snTv']));
-        return '';
-    }
-
+    /**
+     * Register a school/device.
+     * Policy change: allow duplicate NPSN and school_name; only sn_tv must be unique.
+     */
     public function registerSchool($req, $res) {
         $raw = file_get_contents('php://input');
         error_log('Raw JSON received: ' . $raw);
         $parsed = json_decode($raw, true);
 
+        // Accept either raw array (from routing) or parsed JSON
         $data = is_array($req) ? $req : (is_array($parsed) ? $parsed : null);
 
         if (!is_array($data)) {
@@ -45,8 +27,7 @@ class SchoolRegistrationController {
 
         $NPSN          = strtoupper(trim($data['npsn'] ?? ''));
         $school_name   = trim($data['nama_sekolah'] ?? '');
-        // 🔁 accept multiple serial key names (kept compat with your original)
-        $sn_tv         = $this->pickSerialFromArray($data);
+        $sn_tv         = strtoupper(trim($data['serial_number_tv'] ?? ''));
         $registered_at = date('Y-m-d H:i:s');
 
         error_log("REGISTER incoming sn_tv: $sn_tv");
@@ -58,63 +39,30 @@ class SchoolRegistrationController {
             ], 400);
         }
 
-        /* ✅ NEW (non-breaking): ensure the NPSN exists in school_reference,
-           so manual inserts there are respected and you avoid FK surprises later. */
-        $refStmt = sqlsrv_prepare($this->db,
-            'SELECT TOP 1 npsn FROM school_reference WHERE npsn = ?',
-            [$NPSN]
+        // ─────────────────────────────────────────────────────────────
+        // ONLY enforce uniqueness on sn_tv (allow duplicate NPSN/name)
+        // ─────────────────────────────────────────────────────────────
+        $checkSnStmt = sqlsrv_prepare(
+            $this->db,
+            'SELECT 1 FROM school_registration WHERE sn_tv = ?',
+            [$sn_tv]
         );
-        if (!$refStmt || !sqlsrv_execute($refStmt)) {
-            error_log("NPSN reference check failed: " . print_r(sqlsrv_errors(), true));
-            return $res->json(['status'=>'error','message'=>'Database error during school_reference check.'], 500);
-        }
-        $refRow = sqlsrv_fetch_array($refStmt, SQLSRV_FETCH_ASSOC);
-        sqlsrv_free_stmt($refStmt);
-        if (!$refRow) {
-            return $res->json([
-                'status'  => 'error',
-                'message' => 'NPSN not found in school_reference.'
-            ], 404);
-        }
-
-        // Duplicate NPSN
-        $checkNpsnStmt = sqlsrv_prepare($this->db, 'SELECT * FROM school_registration WHERE NPSN = ?', [$NPSN]);
-        if (!$checkNpsnStmt || !sqlsrv_execute($checkNpsnStmt)) {
-            error_log("NPSN check failed: " . print_r(sqlsrv_errors(), true));
-            return $res->json(['status'=>'error','message'=>'Database error during NPSN check.'], 500);
-        }
-        if (sqlsrv_fetch_array($checkNpsnStmt, SQLSRV_FETCH_ASSOC)) {
-            sqlsrv_free_stmt($checkNpsnStmt);
-            // keep your previous behavior (warning + 200)
-            return $res->json(['status'=>'warning','message'=>'NPSN sudah terdaftar.'], 200);
-        }
-        sqlsrv_free_stmt($checkNpsnStmt);
-
-        // Duplicate school name
-        $checkNameStmt = sqlsrv_prepare($this->db, 'SELECT * FROM school_registration WHERE school_name = ?', [$school_name]);
-        if (!$checkNameStmt || !sqlsrv_execute($checkNameStmt)) {
-            error_log("School name check failed: " . print_r(sqlsrv_errors(), true));
-            return $res->json(['status'=>'error','message'=>'Database error during school name check.'], 500);
-        }
-        if (sqlsrv_fetch_array($checkNameStmt, SQLSRV_FETCH_ASSOC)) {
-            sqlsrv_free_stmt($checkNameStmt);
-            return $res->json(['status'=>'warning','message'=>'Nama sekolah sudah terdaftar.'], 200);
-        }
-        sqlsrv_free_stmt($checkNameStmt);
-
-        // Duplicate serial
-        $checkSnStmt = sqlsrv_prepare($this->db, 'SELECT * FROM school_registration WHERE sn_tv = ?', [$sn_tv]);
         if (!$checkSnStmt || !sqlsrv_execute($checkSnStmt)) {
             error_log("Serial check failed: " . print_r(sqlsrv_errors(), true));
             return $res->json(['status'=>'error','message'=>'Database error during serial number check.'], 500);
         }
         if (sqlsrv_fetch_array($checkSnStmt, SQLSRV_FETCH_ASSOC)) {
             sqlsrv_free_stmt($checkSnStmt);
-            return $res->json(['status'=>'warning','message'=>'Serial number TV sudah terdaftar.'], 200);
+            // sn_tv already exists → block (client can retry with another serial)
+            return $res->json([
+                'status'=>'conflict',
+                'message'=>'Serial number TV sudah terdaftar.',
+                'field' => 'sn_tv'
+            ], 409);
         }
         sqlsrv_free_stmt($checkSnStmt);
 
-        // Insert new registration
+        // Insert new registration (NPSN and school_name can repeat)
         $insertStmt = sqlsrv_prepare(
             $this->db,
             'INSERT INTO school_registration (NPSN, school_name, sn_tv, registered_at) VALUES (?, ?, ?, ?)',
@@ -179,7 +127,7 @@ class SchoolRegistrationController {
     }
 
     /* =======================
-       EXTRA GET HELPERS (ADD)
+       EXTRA GET HELPERS (KEEP)
        ======================= */
 
     // List recent registrations
@@ -274,7 +222,6 @@ class SchoolRegistrationController {
         $raw = trim($_GET['table'] ?? '');
         if ($raw === '') return $res->json(['status'=>'error','message'=>'table parameter required'], 400);
 
-        // validate "schema.table" or "table"
         if (!preg_match('/^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)?$/', $raw)) {
             return $res->json(['status'=>'error','message'=>'invalid table name'], 400);
         }
@@ -282,7 +229,6 @@ class SchoolRegistrationController {
         $schema = count($parts) === 2 ? $parts[0] : 'dbo';
         $table  = count($parts) === 2 ? $parts[1] : $parts[0];
 
-        // ensure table exists
         $chk = sqlsrv_prepare($this->db,
             "SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?",
             [$schema, $table]
@@ -292,7 +238,6 @@ class SchoolRegistrationController {
         }
         sqlsrv_free_stmt($chk);
 
-        // columns for safe order by
         $cols = [];
         $colStmt = sqlsrv_prepare($this->db,
             "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
@@ -303,7 +248,7 @@ class SchoolRegistrationController {
             while ($c = sqlsrv_fetch_array($colStmt, SQLSRV_FETCH_ASSOC)) $cols[] = $c['COLUMN_NAME'];
             sqlsrv_free_stmt($colStmt);
         }
-        if (!$cols) $cols = ['(SELECT NULL)']; // fallback
+        if (!$cols) $cols = ['(SELECT NULL)'];
 
         $limit = max(1, min(500, (int)($_GET['limit'] ?? 50)));
         $sort  = $_GET['sort'] ?? $cols[0];

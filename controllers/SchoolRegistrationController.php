@@ -8,7 +8,8 @@ class SchoolRegistrationController {
 
     /**
      * Register a school/device.
-     * Policy change: allow duplicate NPSN and school_name; only sn_tv must be unique.
+     * Policy: allow duplicate NPSN and school_name; sn_tv may repeat across schools,
+     * but the PAIR (NPSN, sn_tv) must be unique.
      */
     public function registerSchool($req, $res) {
         $raw = file_get_contents('php://input');
@@ -40,29 +41,29 @@ class SchoolRegistrationController {
         }
 
         // ─────────────────────────────────────────────────────────────
-        // ONLY enforce uniqueness on sn_tv (allow duplicate NPSN/name)
+        // ENFORCE uniqueness on the COMPOSITE (NPSN, sn_tv) only
         // ─────────────────────────────────────────────────────────────
         $checkSnStmt = sqlsrv_prepare(
             $this->db,
-            'SELECT 1 FROM school_registration WHERE sn_tv = ?',
-            [$sn_tv]
+            'SELECT 1 FROM school_registration WHERE NPSN = ? AND sn_tv = ?',
+            [$NPSN, $sn_tv]
         );
         if (!$checkSnStmt || !sqlsrv_execute($checkSnStmt)) {
-            error_log("Serial check failed: " . print_r(sqlsrv_errors(), true));
+            error_log("Composite serial check failed: " . print_r(sqlsrv_errors(), true));
             return $res->json(['status'=>'error','message'=>'Database error during serial number check.'], 500);
         }
         if (sqlsrv_fetch_array($checkSnStmt, SQLSRV_FETCH_ASSOC)) {
             sqlsrv_free_stmt($checkSnStmt);
-            // sn_tv already exists → block (client can retry with another serial)
+            // same sn_tv already registered for THIS NPSN → block
             return $res->json([
                 'status'=>'conflict',
-                'message'=>'Serial number TV sudah terdaftar.',
+                'message'=>'Serial number TV sudah terdaftar untuk NPSN ini.',
                 'field' => 'sn_tv'
             ], 409);
         }
         sqlsrv_free_stmt($checkSnStmt);
 
-        // Insert new registration (NPSN and school_name can repeat)
+        // Insert new registration (NPSN and school_name can repeat; sn_tv can repeat across NPSN)
         $insertStmt = sqlsrv_prepare(
             $this->db,
             'INSERT INTO school_registration (NPSN, school_name, sn_tv, registered_at) VALUES (?, ?, ?, ?)',

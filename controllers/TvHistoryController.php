@@ -1,72 +1,70 @@
 <?php
-require_once __DIR__ . '/../models/TvHistory.php';
-
 class TvHistoryController {
     private $db;
-    private $model;
+    public function __construct($dbConnection) { $this->db = $dbConnection; }
 
-    public function __construct($dbConnection) {
-        $this->db    = $dbConnection;
-        $this->model = new TvHistory($dbConnection);
-    }
-
-    // GET /api/tv-history?npsn=XXXX&sn_tv=YYYY
+    // GET /api/tv-history?npsn=...&sn_tv=...&date_from=YYYY-MM-DD hh:mm:ss&date_to=...
     public function index($req, $res) {
-        $npsn = strtoupper(trim($_GET['npsn']  ?? ''));
-        $snTv = strtoupper(trim($_GET['sn_tv'] ?? ''));
+        $npsn = trim($req['npsn'] ?? '');
+        $sn   = trim($req['sn_tv'] ?? '');
+        $dateFrom = trim($req['date_from'] ?? '');
+        $dateTo   = trim($req['date_to'] ?? '');
 
-        if ($npsn === '' || $snTv === '') {
-            return $res->json([
-                'status'  => 'error',
-                'message' => 'npsn and sn_tv are required.'
-            ], 400);
+        if ($npsn === '' || $sn === '') {
+            return $res->json(['status'=>'error','message'=>'npsn and sn_tv required'], 400);
         }
 
-        $rows = $this->model->listByDevice($npsn, $snTv, (int)($_GET['limit'] ?? 500));
-        if ($rows === false) {
-            return $res->json(['status'=>'error','message'=>'Database error.'], 500);
+        $sql = "SELECT id, npsn, sn_tv, date, app_name, app_title, app_duration, tv_duration
+                FROM tv_history
+                WHERE npsn = ? AND sn_tv = ?";
+        $params = [$npsn, $sn];
+
+        if ($dateFrom !== '') { $sql .= " AND date >= ?"; $params[] = $dateFrom; }
+        if ($dateTo   !== '') { $sql .= " AND date <= ?"; $params[] = $dateTo; }
+
+        $sql .= " ORDER BY date DESC";
+
+        $stmt = sqlsrv_query($this->db, $sql, $params);
+        if (!$stmt) {
+            error_log('tv_history index error: '.print_r(sqlsrv_errors(), true));
+            return $res->json(['status'=>'error','message'=>'Database error'], 500);
         }
 
+        $rows = [];
+        while ($r = sqlsrv_fetch_array($stmt, SQLSRV_FETCH_ASSOC)) {
+            foreach ($r as $k=>$v) {
+                if ($v instanceof \DateTimeInterface) $r[$k] = $v->format('Y-m-d H:i:s');
+            }
+            $rows[] = $r;
+        }
+        sqlsrv_free_stmt($stmt);
         return $res->json(['status'=>'success','data'=>$rows], 200);
     }
 
-    // POST /api/tv-history
+    // POST /api/tv-history  (body includes npsn, sn_tv, date, app_name, app_title, app_duration, tv_duration)
     public function store($req, $res) {
-        // Accept JSON body or regular POST form
-        $raw = file_get_contents('php://input');
-        $json = json_decode($raw, true);
-        $in = is_array($json) ? $json : $_POST;
+        $npsn  = trim($req['npsn'] ?? '');
+        $sn_tv = trim($req['sn_tv'] ?? '');
+        $date  = trim($req['date'] ?? '');
+        $app_name   = trim($req['app_name'] ?? '');
+        $app_title  = trim($req['app_title'] ?? '');
+        $app_dur    = (int)($req['app_duration'] ?? 0);
+        $tv_dur     = (int)($req['tv_duration'] ?? 0);
 
-        // Expect: npsn, sn_tv, date, app_name, app_title, app_duration, tv_duration
-        $npsn        = strtoupper(trim($in['npsn']        ?? ''));
-        $snTv        = strtoupper(trim($in['sn_tv']       ?? ''));
-        $date        = trim($in['date']                   ?? '');
-        $appName     = trim($in['app_name']               ?? '');
-        $appTitle    = trim($in['app_title']              ?? '');
-        $appDuration = (int)($in['app_duration']          ?? 0);
-        $tvDuration  = (int)($in['tv_duration']           ?? 0);
-
-        if ($npsn === '' || $snTv === '' || $date === '' || $appName === '') {
-            return $res->json([
-                'status'  => 'error',
-                'message' => 'npsn, sn_tv, date, app_name are required.'
-            ], 400);
+        if ($npsn==='' || $sn_tv==='' || $date==='') {
+            return $res->json(['status'=>'error','message'=>'npsn, sn_tv, date required'], 400);
         }
 
-        $ok = $this->model->insert([
-            'npsn'         => $npsn,
-            'sn_tv'        => $snTv,
-            'date'         => $date,
-            'app_name'     => $appName,
-            'app_title'    => $appTitle,
-            'app_duration' => $appDuration,
-            'tv_duration'  => $tvDuration,
-        ]);
+        $sql = "INSERT INTO tv_history (npsn, sn_tv, date, app_name, app_title, app_duration, tv_duration)
+                VALUES (?, ?, ?, ?, ?, ?, ?)";
+        $params = [$npsn, $sn_tv, $date, $app_name, $app_title, $app_dur, $tv_dur];
 
-        if (!$ok) {
-            return $res->json(['status'=>'error','message'=>'Insert failed.'], 500);
+        $stmt = sqlsrv_query($this->db, $sql, $params);
+        if (!$stmt) {
+            error_log('tv_history store error: '.print_r(sqlsrv_errors(), true));
+            return $res->json(['status'=>'error','message'=>'Insert failed'], 500);
         }
-
-        return $res->json(['status'=>'success'], 200);
+        sqlsrv_free_stmt($stmt);
+        return $res->json(['status'=>'success'], 201);
     }
 }
